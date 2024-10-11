@@ -1,0 +1,207 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI Proctored Exam</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.min.css" rel="stylesheet">
+    <style>
+        #video-container {
+            position: relative;
+            width: 320px;
+            height: 240px;
+        }
+        #webcam {
+            width: 100%;
+            height: 100%;
+        }
+        #face-box {
+            position: absolute;
+            border: 2px solid green;
+            display: none;
+        }
+        #warning-box {
+            position: fixed;
+            top: 10px;
+            right: 10px;
+            background-color: rgba(255, 0, 0, 0.8);
+            color: white;
+            padding: 10px;
+            border-radius: 5px;
+            display: none;
+        }
+    </style>
+</head>
+<body>
+    <div class="container mt-4">
+        <div class="row">
+            <div class="col-md-8">
+                <h2>AI Proctored Exam</h2>
+                <div id="exam-content">
+                    <!-- Exam questions will be dynamically loaded here -->
+                </div>
+                <button id="submit-exam" class="btn btn-primary mt-3">Submit Exam</button>
+            </div>
+            <div class="col-md-4">
+                <div id="video-container">
+                    <video id="webcam" autoplay playsinline></video>
+                    <div id="face-box"></div>
+                </div>
+                <div id="warning-box"></div>
+                <div id="status" class="mt-2"></div>
+            </div>
+        </div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/js/bootstrap.bundle.min.js"></script>
+    <script>
+        const video = document.getElementById('webcam');
+        const faceBox = document.getElementById('face-box');
+        const warningBox = document.getElementById('warning-box');
+        const statusDiv = document.getElementById('status');
+        const examContent = document.getElementById('exam-content');
+        const submitButton = document.getElementById('submit-exam');
+
+        // Sample exam questions (replace with your actual questions)
+        const examQuestions = [
+            {
+                question: "What is the capital of France?",
+                options: ["London", "Berlin", "Paris", "Madrid"]
+            },
+            {
+                question: "Who wrote 'Romeo and Juliet'?",
+                options: ["Charles Dickens", "William Shakespeare", "Jane Austen", "Mark Twain"]
+            }
+            // Add more questions as needed
+        ];
+
+        // Load exam questions
+        function loadExamQuestions() {
+            examQuestions.forEach((q, index) => {
+                const questionHtml = `
+                    <div class="mb-4">
+                        <h5>${index + 1}. ${q.question}</h5>
+                        ${q.options.map((option, i) => `
+                            <div class="form-check">
+                                <input class="form-check-input" type="radio" name="question${index}" id="q${index}o${i}" value="${option}">
+                                <label class="form-check-label" for="q${index}o${i}">${option}</label>
+                            </div>
+                        `).join('')}
+                    </div>
+                `;
+                examContent.innerHTML += questionHtml;
+            });
+        }
+
+        loadExamQuestions();
+
+        // Access webcam
+        navigator.mediaDevices.getUserMedia({ video: true })
+            .then(stream => {
+                video.srcObject = stream;
+            })
+            .catch(err => {
+                console.error("Error accessing the webcam:", err);
+                statusDiv.textContent = "Error: Unable to access the webcam";
+            });
+
+        function captureAndVerify() {
+            const canvas = document.createElement('canvas');
+            canvas.width = video.videoWidth;
+            canvas.height = video.videoHeight;
+            canvas.getContext('2d').drawImage(video, 0, 0);
+            
+            canvas.toBlob(blob => {
+                const formData = new FormData();
+                formData.append('file', blob, 'webcam.jpg');
+
+                fetch('/verify', {
+                    method: 'POST',
+                    body: formData
+                })
+                .then(response => {
+                    if (!response.ok) {
+                        throw new Error('Network response was not ok');
+                    }
+                    return response.json();
+                })
+                .then(data => {
+                    updateStatus(data);
+                    updateFaceBox(data.face_box);
+                    checkWarnings(data);
+                })
+                .catch(error => {
+                    console.error('Error:', error);
+                    statusDiv.textContent = "Error: " + error.message;
+                });
+            }, 'image/jpeg');
+        }
+
+        function updateStatus(data) {
+            if (data.is_same) {
+                statusDiv.textContent = "Face Verified";
+                statusDiv.style.color = "green";
+            } else {
+                statusDiv.textContent = "Face Not Verified - Please center your face";
+                statusDiv.style.color = "red";
+            }
+            console.log("Face verification distance:", data.distance);
+        }
+
+        function updateFaceBox(faceBoxData) {
+            if (faceBoxData) {
+                const videoRect = video.getBoundingClientRect();
+                faceBox.style.left = `${faceBoxData.x1 * videoRect.width}px`;
+                faceBox.style.top = `${faceBoxData.y1 * videoRect.height}px`;
+                faceBox.style.width = `${(faceBoxData.x2 - faceBoxData.x1) * videoRect.width}px`;
+                faceBox.style.height = `${(faceBoxData.y2 - faceBoxData.y1) * videoRect.height}px`;
+                faceBox.style.display = 'block';
+            } else {
+                faceBox.style.display = 'none';
+            }
+        }
+
+        function checkWarnings(data) {
+            let warnings = [];
+            if (!data.is_same) warnings.push("Face not recognized");
+            if (data.objects && data.objects.length > 0) warnings.push("Unauthorized objects detected");
+            if (data.audio_events && data.audio_events.length > 0) warnings.push("Suspicious audio detected");
+            
+            // Check for significant head movement
+            if (data.pose_results && data.pose_results.length > 0) {
+                const head = data.pose_results[0];  // Assuming the first point is the nose or a central face point
+                if (Math.abs(head.x - 0.5) > 0.2 || Math.abs(head.y - 0.5) > 0.2) {
+                    warnings.push("Significant head movement detected");
+                }
+            }
+            
+            if (warnings.length > 0) {
+                warningBox.textContent = warnings.join(", ");
+                warningBox.style.display = 'block';
+            } else {
+                warningBox.style.display = 'none';
+            }
+        }
+
+        // Perform verification every 1 second
+        setInterval(captureAndVerify, 1000);
+
+        submitButton.addEventListener('click', () => {
+            fetch('/end_exam', { method: 'POST' })
+                .then(response => response.json())
+                .then(data => {
+                    alert("Exam submitted! Thank you for your participation.");
+                    console.log('Exam ended. Audio events:', data.audio_events);
+                    // Redirect to a thank you page or show results
+                    // window.location.href = '/exam_complete';
+                })
+                .catch(error => {
+                    console.error('Error ending exam:', error);
+                });
+        });
+
+        // Start verification immediately when the page loads
+        captureAndVerify();
+    </script>
+</body>
+</html>
